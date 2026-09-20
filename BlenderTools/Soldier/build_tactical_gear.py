@@ -1,17 +1,40 @@
 import bpy
 from mathutils import Vector
 
-# Tactical gear builder for an existing MPFB human.
-# Select the MPFB body or rig, then run this script.
-# Gear is deliberately separate from the human so it can be refined/replaced later.
-
 COLLECTION = "Tactical_Gear"
 
+# ---------- helpers ----------
+def bbox_world(obj):
+    pts = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+    xs = [p.x for p in pts]; ys = [p.y for p in pts]; zs = [p.z for p in pts]
+    return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+
+def find_human_mesh():
+    # Prefer MPFB-style names
+    preferred = []
+    fallback = []
+    for o in bpy.context.scene.objects:
+        if o.type != 'MESH':
+            continue
+        name = o.name.lower()
+        if "human" in name or "body" in name:
+            preferred.append(o)
+        else:
+            fallback.append(o)
+    candidates = preferred or fallback
+    if not candidates:
+        raise RuntimeError("No mesh object found. Create/select an MPFB human first.")
+    # choose tallest mesh in world space
+    return max(candidates, key=lambda o: bbox_world(o)[5] - bbox_world(o)[4])
+
 def get_collection():
-    c = bpy.data.collections.get(COLLECTION)
-    if not c:
-        c = bpy.data.collections.new(COLLECTION)
-        bpy.context.scene.collection.children.link(c)
+    old = bpy.data.collections.get(COLLECTION)
+    if old:
+        for obj in list(old.objects):
+            bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.collections.remove(old)
+    c = bpy.data.collections.new(COLLECTION)
+    bpy.context.scene.collection.children.link(c)
     return c
 
 def material(name, color, metallic=0.0, roughness=0.65):
@@ -48,7 +71,8 @@ def sphere(name, loc, scale, mat):
     o.name = name
     o.scale = scale
     bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    for p in o.data.polygons: p.use_smooth = True
+    for p in o.data.polygons:
+        p.use_smooth = True
     o.data.materials.append(mat)
     move_to_collection(o, gear_col)
     return o
@@ -61,56 +85,68 @@ def cyl(name, loc, radius, depth, mat, rot=(0,0,0)):
     move_to_collection(o, gear_col)
     return o
 
+# ---------- detect MPFB body ----------
+human = find_human_mesh()
+xmin, xmax, ymin, ymax, zmin, zmax = bbox_world(human)
+H = zmax - zmin
+W = xmax - xmin
+D = ymax - ymin
+cx = (xmin + xmax) / 2
+cy = (ymin + ymax) / 2
+
+# ratios relative to detected body
+chest_z = zmin + H * 0.72
+waist_z = zmin + H * 0.54
+knee_z = zmin + H * 0.28
+head_z = zmin + H * 0.92
+
 gear_col = get_collection()
 olive = material("TAC_Olive", (0.10, 0.11, 0.075))
 dark = material("TAC_Dark", (0.025, 0.03, 0.025), roughness=0.55)
 fabric = material("TAC_Fabric", (0.15, 0.14, 0.105), roughness=0.85)
-metal = material("TAC_Metal", (0.035,0.04,0.035), metallic=0.55, roughness=0.38)
+metal = material("TAC_Metal", (0.035, 0.04, 0.035), metallic=0.55, roughness=0.38)
 
-# Dimensions assume the default MPFB human is around 1.7-1.8 m tall.
+front_y = ymin - D * 0.03
+back_y = ymax + D * 0.03
+
 # Plate carrier
-cube("TAC_PlateCarrier_Front", (0,-0.145,1.32), (0.27,0.055,0.27), olive, 0.035)
-cube("TAC_PlateCarrier_Back", (0,0.145,1.32), (0.27,0.055,0.27), olive, 0.035)
-cube("TAC_ShoulderPad_L", (-0.31,0,1.48), (0.095,0.13,0.07), olive, 0.03)
-cube("TAC_ShoulderPad_R", (0.31,0,1.48), (0.095,0.13,0.07), olive, 0.03)
+cube("TAC_PlateCarrier_Front", (cx, front_y, chest_z), (W*0.29, D*0.08, H*0.145), olive, H*0.012)
+cube("TAC_PlateCarrier_Back", (cx, back_y, chest_z), (W*0.29, D*0.08, H*0.145), olive, H*0.012)
 
-# Magazine pouches
-for i, x in enumerate((-0.16, 0.0, 0.16), 1):
-    cube(f"TAC_MagPouch_{i}", (x,-0.215,1.22), (0.062,0.04,0.115), fabric, 0.015)
+# Shoulder pads
+cube("TAC_ShoulderPad_L", (cx-W*0.34, cy, chest_z+H*0.07), (W*0.08, D*0.16, H*0.035), olive, H*0.008)
+cube("TAC_ShoulderPad_R", (cx+W*0.34, cy, chest_z+H*0.07), (W*0.08, D*0.16, H*0.035), olive, H*0.008)
 
-# Belt and utility pouches
-cube("TAC_Belt", (0,0,0.98), (0.31,0.12,0.035), dark, 0.012)
-cube("TAC_Utility_L", (-0.29,0,0.93), (0.075,0.09,0.10), olive, 0.02)
-cube("TAC_Utility_R", (0.29,0,0.93), (0.075,0.09,0.10), olive, 0.02)
-cube("TAC_Holster", (0.34,-0.01,0.77), (0.055,0.075,0.15), dark, 0.018)
+# Mag pouches
+for i, xoff in enumerate((-0.16, 0.0, 0.16), 1):
+    cube(f"TAC_MagPouch_{i}", (cx+W*xoff, front_y-D*0.07, chest_z-H*0.06), (W*0.065, D*0.055, H*0.055), fabric, H*0.005)
+
+# Belt + utilities
+cube("TAC_Belt", (cx, cy, waist_z), (W*0.34, D*0.15, H*0.018), dark, H*0.004)
+cube("TAC_Utility_L", (cx-W*0.33, cy, waist_z-H*0.025), (W*0.075, D*0.09, H*0.05), olive, H*0.006)
+cube("TAC_Utility_R", (cx+W*0.33, cy, waist_z-H*0.025), (W*0.075, D*0.09, H*0.05), olive, H*0.006)
+cube("TAC_Holster", (cx+W*0.39, cy-D*0.02, waist_z-H*0.11), (W*0.055, D*0.08, H*0.075), dark, H*0.005)
 
 # Knee pads
-cube("TAC_KneePad_L", (-0.105,-0.105,0.48), (0.095,0.035,0.105), dark, 0.035)
-cube("TAC_KneePad_R", (0.105,-0.105,0.48), (0.095,0.035,0.105), dark, 0.035)
+cube("TAC_KneePad_L", (cx-W*0.12, front_y-D*0.03, knee_z), (W*0.09, D*0.05, H*0.05), dark, H*0.008)
+cube("TAC_KneePad_R", (cx+W*0.12, front_y-D*0.03, knee_z), (W*0.09, D*0.05, H*0.05), dark, H*0.008)
 
-# Helmet, side rails and NVG mount
-helmet = sphere("TAC_Helmet", (0,0,1.79), (0.155,0.14,0.105), olive)
-cube("TAC_HelmetRail_L", (-0.145,0,1.79), (0.018,0.085,0.035), dark, 0.01)
-cube("TAC_HelmetRail_R", (0.145,0,1.79), (0.018,0.085,0.035), dark, 0.01)
-cube("TAC_NVG_Mount", (0,-0.132,1.80), (0.045,0.018,0.04), metal, 0.008)
+# Helmet + headset
+sphere("TAC_Helmet", (cx, cy, head_z), (W*0.18, D*0.19, H*0.07), olive)
+cube("TAC_NVG_Mount", (cx, front_y-D*0.02, head_z), (W*0.045, D*0.022, H*0.022), metal, H*0.003)
+cyl("TAC_EarCup_L", (cx-W*0.19, cy, head_z-H*0.02), W*0.045, D*0.05, dark, (0,1.5708,0))
+cyl("TAC_EarCup_R", (cx+W*0.19, cy, head_z-H*0.02), W*0.045, D*0.05, dark, (0,1.5708,0))
 
-# Headset
-cyl("TAC_EarCup_L", (-0.16,0,1.73), 0.045, 0.035, dark, (0,1.5708,0))
-cyl("TAC_EarCup_R", (0.16,0,1.73), 0.045, 0.035, dark, (0,1.5708,0))
+# Backpack + radio
+cube("TAC_Backpack", (cx, back_y+D*0.08, chest_z-H*0.02), (W*0.23, D*0.12, H*0.16), olive, H*0.012)
+cube("TAC_Radio", (cx-W*0.27, back_y+D*0.04, chest_z), (W*0.055, D*0.05, H*0.055), dark, H*0.005)
+cyl("TAC_RadioAntenna", (cx-W*0.27, back_y+D*0.04, chest_z+H*0.08), W*0.008, H*0.13, dark)
 
-# Backpack and radio
-cube("TAC_Backpack", (0,0.205,1.27), (0.235,0.095,0.28), olive, 0.045)
-cube("TAC_Radio", (-0.24,0.17,1.30), (0.055,0.045,0.105), dark, 0.015)
-cyl("TAC_RadioAntenna", (-0.24,0.17,1.47), 0.008, 0.24, dark)
-
-# Gloves as cuffs (keeps MPFB hands visible)
-cube("TAC_GloveCuff_L", (-0.55,0,1.10), (0.055,0.065,0.055), dark, 0.02)
-cube("TAC_GloveCuff_R", (0.55,0,1.10), (0.055,0.065,0.055), dark, 0.02)
-
-# Organize metadata
 for obj in gear_col.objects:
     obj["dronecall_asset"] = "tactical_gear"
-    obj["game_ready_candidate"] = True
+    obj["fitted_to"] = human.name
+    obj["detected_height"] = H
 
-print(f"Created {len(gear_col.objects)} tactical gear objects in collection '{COLLECTION}'.")
-print("Next: fit these pieces to the MPFB body, then bind/parent them to the final game rig.")
+print(f"Detected human: {human.name}")
+print(f"Bounds H={H:.4f} W={W:.4f} D={D:.4f}")
+print(f"Created {len(gear_col.objects)} fitted tactical gear objects.")
